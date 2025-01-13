@@ -1014,3 +1014,123 @@ tables:
           - '12763326'
           - '186712'
           - '4309145'
+
+verified_queries:
+  - name: "Weekly Active Teams, Paid Teams, Total CU, Paid CU"
+    question: "Can you show me # of total active teams, active paid teams, total cu, paid cu by week?"
+    verified_at: 1736805794
+    verified_by: Bella
+    sql: "
+      SELECT
+        DATE_TRUNC('week', dt) AS week,
+        COUNT(DISTINCT team_id) AS active_teams,
+        COUNT(DISTINCT IFF(TEAM_PLAN_TIER IN ('GROWTH','SCALE','ENTERPRISE'), team_id, NULL)) AS active_paid_teams,
+        SUM(total_fcu) AS total_cu,
+        SUM(IFF(TEAM_PLAN_TIER IN ('GROWTH','SCALE','ENTERPRISE'), total_fcu, 0)) AS paid_cu
+      FROM __product_usage__daily
+      GROUP BY
+        1
+    "
+    - name: "Teams and CU by Product Vertical and Product Category"
+    question: "Can you show me # of paid teams and paid cu for Node Service, by product category?"
+    verified_at: 1736805794
+    verified_by: Bella
+    sql: "
+      SELECT
+        DATE_TRUNC('week', dt) AS week,
+        product_category,
+        COUNT(DISTINCT team_id) AS paid_teams,
+        SUM(total_fcu) AS paid_cu
+      FROM __product_usage__daily
+      WHERE TEAM_PLAN_TIER IN ('GROWTH','SCALE','ENTERPRISE')
+      and product_vertical = 'Node Services'
+      GROUP BY
+        1, 2
+    "
+    - name: "Teams and CU by Blockchain"
+    question: "Can you show me # of paid teams and paid cu by blockchain and network?"
+    verified_at: 1736805794
+    verified_by: Bella
+    sql: "
+      SELECT
+        DATE_TRUNC('week', dt) AS week,
+        blockchain,
+        blockchain_network, 
+        COUNT(DISTINCT team_id) AS paid_teams,
+        SUM(total_fcu) AS paid_cu
+      FROM __product_usage__daily
+      WHERE TEAM_PLAN_TIER IN ('GROWTH','SCALE','ENTERPRISE')
+      GROUP BY
+        1, 2
+    "
+    - name: "LFG Teams"
+    question: "Can you show me weekly # of active lfg teams for past 1 year?"
+    verified_at: 1736805794
+    verified_by: Bella
+    sql: "
+      SELECT
+        DATE_TRUNC('week', dt) AS week,
+        COUNT(DISTINCT team_id) AS active_lfg_teams,
+        SUM(total_fcu) AS lfg_teams_cu
+      FROM __product_usage__daily
+      WHERE lfg_flag
+      AND dt >= current_date - interval '1 year'
+      GROUP BY
+        1
+    "
+    - name: "Paid Teams Growth Accounting"
+    question: "Can you show me # of paid teams and paid cu from teams that are churned/resurrected/new/expanded/contracted?"
+    verified_at: 1736805794
+    verified_by: Bella
+    sql: "
+    WITH base AS (
+        SELECT
+            DATE_TRUNC('week', dt) AS time_period,
+            team_id,
+            team_name,
+            generalized_use_case,
+            lfg_flag,
+            listagg(distinct team_plan_tier, '-') as tiers,
+            SUM(total_fcu) AS total_fcu
+        FROM  __product_usage__daily
+        WHERE
+            team_plan_tier IN ('ENTERPRISE', 'SCALE', 'GROWTH')
+        GROUP BY 1, 2, 3, 4, 5
+    ), min_dt AS (
+        SELECT
+            team_id,
+            MIN(time_period) AS min_time_period
+        FROM base
+        GROUP BY 1
+    ), growth_accounting AS (
+        --- define each team_id as new, churned, expanded, contracted, retained
+    SELECT
+        time_period,
+        base.team_id,
+        team_name,
+        generalized_use_case,
+        lfg_flag,
+        tiers,
+        min_dt.min_time_period,
+        CASE
+            WHEN total_fcu = 0 THEN -total_fcu
+                    ELSE total_fcu
+        END AS total_fcu,
+        total_fcu - LAG(total_fcu) OVER (PARTITION BY base.team_id ORDER BY time_period) AS fcu_change,
+        CASE
+            WHEN time_period = min_time_period THEN 'new'
+            WHEN total_fcu = 0 THEN 'churned'
+            WHEN total_fcu > 0 AND total_fcu < LAG(total_fcu) OVER (PARTITION BY base.team_id ORDER BY time_period) THEN 'contracted'
+            WHEN total_fcu > 0 AND total_fcu > LAG(total_fcu) OVER (PARTITION BY base.team_id ORDER BY time_period) THEN 'expanded'
+            ELSE 'retained'
+        END AS growth_status
+    FROM base
+    INNER JOIN min_dt ON base.team_id = min_dt.team_id
+    )
+    SELECT time_period,
+      growth_status,
+      COUNT(DISTINCT team_id) AS teams,
+      SUM(total_fcu) AS total_cu
+    FROM growth_accounting
+    GROUP BY 1, 2
+    "
